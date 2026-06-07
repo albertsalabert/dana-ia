@@ -88,26 +88,18 @@ export default function ChatInterface({ user }: Props) {
         body: JSON.stringify({ messages: updatedMessages }),
       });
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      // Mensajes bloqueados vienen como JSON (content-type: application/json)
+      // Respuestas normales vienen como SSE (content-type: text/event-stream)
+      const contentType = res.headers.get("content-type") || "";
 
-      const data = await res.json().catch(() => null);
-
-      // Mensaje bloqueado por filtro
-      if (data?.blocked) {
-        setBlockedMessage(data.message);
-        setMessages((prev) => prev.slice(0, -1)); // quitar el último mensaje del usuario
-        setIsLoading(false);
-        return;
-      }
-
-      // Si no es SSE (respuesta JSON normal), manejar
-      if (data?.text) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: data.text },
-        ]);
+      if (!res.ok || contentType.includes("application/json")) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.blocked) {
+          setBlockedMessage(data.message);
+          setMessages((prev) => prev.slice(0, -1));
+        } else {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
         setIsLoading(false);
         return;
       }
