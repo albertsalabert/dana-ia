@@ -8,11 +8,16 @@ export default async function ChatPage() {
   if (!session) redirect("/auth/login");
 
   const db = getServiceClient();
-  const { data: user } = await db
-    .from("users")
-    .select("name, email, role")
-    .eq("id", session.userId)
-    .single();
+
+  const [{ data: user }, { data: conversations }] = await Promise.all([
+    db.from("users").select("name, email, role").eq("id", session.userId).single(),
+    db
+      .from("conversations")
+      .select("id, title, updated_at")
+      .eq("user_id", session.userId)
+      .order("updated_at", { ascending: false })
+      .limit(100),
+  ]);
 
   return (
     <ChatInterface
@@ -21,6 +26,7 @@ export default async function ChatPage() {
         email: user?.email || "",
         role: user?.role || "user",
       }}
+      initialConversations={conversations || []}
     />
   );
 }

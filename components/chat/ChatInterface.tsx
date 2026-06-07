@@ -2,22 +2,23 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
-  Bot,
-  Send,
-  Plus,
-  LogOut,
-  Settings,
-  AlertTriangle,
-  User,
-  Loader2,
+  Bot, Send, Plus, LogOut, Settings, AlertTriangle,
+  User, Loader2, Trash2, MessageSquare,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useRouter } from "next/navigation";
 import type { ChatMessage } from "@/app/api/chat/route";
 
+interface Conversation {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
 interface Props {
   user: { name: string; email: string; role: string };
+  initialConversations: Conversation[];
 }
 
 const COMPANY_NAME = process.env.NEXT_PUBLIC_COMPANY_NAME || "IA Corporativa";
@@ -34,11 +35,41 @@ Puedo ayudarte con:
 
 *¿En qué puedo ayudarte hoy?*`;
 
-export default function ChatInterface({ user }: Props) {
+function groupConversations(conversations: Conversation[]) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const week = new Date(today.getTime() - 7 * 86400000);
+  const month = new Date(today.getTime() - 30 * 86400000);
+
+  const groups: Record<string, Conversation[]> = {
+    "Hoy": [],
+    "Ayer": [],
+    "Últimos 7 días": [],
+    "Últimos 30 días": [],
+    "Anteriores": [],
+  };
+
+  for (const c of conversations) {
+    const d = new Date(c.updated_at);
+    if (d >= today) groups["Hoy"].push(c);
+    else if (d >= yesterday) groups["Ayer"].push(c);
+    else if (d >= week) groups["Últimos 7 días"].push(c);
+    else if (d >= month) groups["Últimos 30 días"].push(c);
+    else groups["Anteriores"].push(c);
+  }
+
+  return groups;
+}
+
+export default function ChatInterface({ user, initialConversations }: Props) {
+  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const router = useRouter();
@@ -55,9 +86,36 @@ export default function ChatInterface({ user }: Props) {
   };
 
   const handleNewChat = () => {
+    setActiveConversationId(null);
     setMessages([]);
     setBlockedMessage(null);
     setInput("");
+  };
+
+  const handleLoadConversation = async (id: string) => {
+    if (id === activeConversationId) return;
+    setActiveConversationId(id);
+    setBlockedMessage(null);
+    setIsLoading(true);
+
+    try {
+      const res = await fetch(`/api/conversations/${id}`);
+      const data = await res.json();
+      setMessages(data.messages || []);
+    } catch {
+      setMessages([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteConversation = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setDeletingId(id);
+    await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    if (activeConversationId === id) handleNewChat();
+    setDeletingId(null);
   };
 
   const handleLogout = async () => {
@@ -77,19 +135,18 @@ export default function ChatInterface({ user }: Props) {
     setBlockedMessage(null);
     setIsLoading(true);
 
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-    }
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: updatedMessages }),
+        body: JSON.stringify({
+          messages: updatedMessages,
+          conversationId: activeConversationId,
+        }),
       });
 
-      // Mensajes bloqueados vienen como JSON (content-type: application/json)
-      // Respuestas normales vienen como SSE (content-type: text/event-stream)
       const contentType = res.headers.get("content-type") || "";
 
       if (!res.ok || contentType.includes("application/json")) {
@@ -104,12 +161,12 @@ export default function ChatInterface({ user }: Props) {
         return;
       }
 
-      // Streaming SSE
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No stream");
 
       const decoder = new TextDecoder();
       let assistantText = "";
+      let newConversationId: string | null = null;
 
       setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
@@ -118,45 +175,57 @@ export default function ChatInterface({ user }: Props) {
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const payload = line.slice(6);
-            if (payload === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(payload);
-              if (parsed.text) {
-                assistantText += parsed.text;
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: "assistant",
-                    content: assistantText,
-                  };
-                  return updated;
-                });
-              }
-            } catch {
-              // ignorar líneas malformadas
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          try {
+            const parsed = JSON.parse(payload);
+            if (parsed.text) {
+              assistantText += parsed.text;
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: "assistant", content: assistantText };
+                return updated;
+              });
             }
+            if (parsed.done && parsed.conversationId) {
+              newConversationId = parsed.conversationId;
+            }
+          } catch {
+            // ignorar líneas malformadas
           }
         }
+      }
+
+      // Actualizar lista de conversaciones
+      if (newConversationId && !activeConversationId) {
+        setActiveConversationId(newConversationId);
+        const title = text.length > 60 ? text.slice(0, 57) + "..." : text;
+        const newConv: Conversation = {
+          id: newConversationId,
+          title,
+          updated_at: new Date().toISOString(),
+        };
+        setConversations((prev) => [newConv, ...prev]);
+      } else if (activeConversationId) {
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === activeConversationId
+              ? { ...c, updated_at: new Date().toISOString() }
+              : c
+          )
+        );
       }
     } catch (err) {
       console.error("Chat error:", err);
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content:
-            "Ha ocurrido un error al procesar tu consulta. Por favor, inténtalo de nuevo.",
-        },
+        { role: "assistant", content: "Ha ocurrido un error al procesar tu consulta. Por favor, inténtalo de nuevo." },
       ]);
     } finally {
       setIsLoading(false);
     }
-  }, [input, messages, isLoading]);
+  }, [input, messages, isLoading, activeConversationId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -165,10 +234,13 @@ export default function ChatInterface({ user }: Props) {
     }
   };
 
+  const groups = groupConversations(conversations);
+
   return (
     <div className="flex h-screen bg-gray-100">
       {/* Sidebar */}
       <aside className="w-64 bg-brand-900 flex flex-col text-white flex-shrink-0">
+        {/* Header */}
         <div className="p-4 border-b border-blue-800">
           <div className="flex items-center gap-2 mb-4">
             <Bot className="w-6 h-6 text-blue-300" />
@@ -183,14 +255,47 @@ export default function ChatInterface({ user }: Props) {
           </button>
         </div>
 
-        <div className="flex-1 p-4">
-          <p className="text-blue-300 text-xs uppercase font-semibold tracking-wider mb-2">
-            Uso corporativo
-          </p>
-          <p className="text-blue-200 text-xs leading-relaxed">
-            Este asistente está configurado para consultas profesionales.
-            No procesa datos personales ni información de salud.
-          </p>
+        {/* Historial de conversaciones */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin py-2">
+          {conversations.length === 0 ? (
+            <p className="text-blue-300 text-xs text-center px-4 py-6">
+              Aún no hay conversaciones
+            </p>
+          ) : (
+            Object.entries(groups).map(([group, convs]) =>
+              convs.length === 0 ? null : (
+                <div key={group} className="mb-2">
+                  <p className="text-blue-400 text-xs font-semibold px-4 py-1 uppercase tracking-wider">
+                    {group}
+                  </p>
+                  {convs.map((conv) => (
+                    <div
+                      key={conv.id}
+                      onClick={() => handleLoadConversation(conv.id)}
+                      className={`group flex items-center gap-2 px-3 py-2 mx-1 rounded-lg cursor-pointer transition-colors ${
+                        activeConversationId === conv.id
+                          ? "bg-blue-700"
+                          : "hover:bg-blue-800"
+                      }`}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5 text-blue-300 flex-shrink-0" />
+                      <span className="text-sm text-blue-100 truncate flex-1 leading-snug">
+                        {conv.title}
+                      </span>
+                      <button
+                        onClick={(e) => handleDeleteConversation(e, conv.id)}
+                        disabled={deletingId === conv.id}
+                        className="opacity-0 group-hover:opacity-100 text-blue-400 hover:text-red-400 transition-all flex-shrink-0"
+                        title="Eliminar"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
+            )
+          )}
         </div>
 
         {/* Footer usuario */}
@@ -227,20 +332,16 @@ export default function ChatInterface({ user }: Props) {
 
       {/* Área principal */}
       <main className="flex-1 flex flex-col min-w-0">
-        {/* Mensajes */}
         <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-6">
-          {/* Mensaje de bienvenida */}
-          {messages.length === 0 && (
+          {/* Bienvenida */}
+          {messages.length === 0 && !isLoading && (
             <div className="max-w-3xl mx-auto">
               <div className="flex gap-3">
                 <div className="w-8 h-8 bg-brand-600 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
                   <Bot className="w-4 h-4 text-white" />
                 </div>
                 <div className="bg-white rounded-2xl rounded-tl-sm shadow-sm px-5 py-4 max-w-2xl">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    className="prose prose-sm max-w-none"
-                  >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none">
                     {WELCOME_MESSAGE}
                   </ReactMarkdown>
                 </div>
@@ -248,17 +349,13 @@ export default function ChatInterface({ user }: Props) {
             </div>
           )}
 
-          {/* Historial */}
+          {/* Mensajes */}
           {messages.map((msg, i) => (
             <div key={i} className="max-w-3xl mx-auto">
-              <div
-                className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}
-              >
+              <div className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : ""}`}>
                 <div
                   className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${
-                    msg.role === "user"
-                      ? "bg-gray-700"
-                      : "bg-brand-600"
+                    msg.role === "user" ? "bg-gray-700" : "bg-brand-600"
                   }`}
                 >
                   {msg.role === "user" ? (
@@ -275,10 +372,7 @@ export default function ChatInterface({ user }: Props) {
                   }`}
                 >
                   {msg.role === "assistant" ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      className="prose prose-sm max-w-none"
-                    >
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} className="prose prose-sm max-w-none">
                       {msg.content || "▌"}
                     </ReactMarkdown>
                   ) : (
@@ -289,7 +383,7 @@ export default function ChatInterface({ user }: Props) {
             </div>
           ))}
 
-          {/* Indicador cargando */}
+          {/* Cargando */}
           {isLoading && messages[messages.length - 1]?.role === "user" && (
             <div className="max-w-3xl mx-auto">
               <div className="flex gap-3">
@@ -303,7 +397,7 @@ export default function ChatInterface({ user }: Props) {
             </div>
           )}
 
-          {/* Mensaje bloqueado */}
+          {/* Bloqueado */}
           {blockedMessage && (
             <div className="max-w-3xl mx-auto">
               <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
@@ -323,10 +417,7 @@ export default function ChatInterface({ user }: Props) {
               <textarea
                 ref={textareaRef}
                 value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  adjustTextarea();
-                }}
+                onChange={(e) => { setInput(e.target.value); adjustTextarea(); }}
                 onKeyDown={handleKeyDown}
                 placeholder="Escribe tu consulta corporativa..."
                 rows={1}
