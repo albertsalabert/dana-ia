@@ -87,7 +87,13 @@ export async function POST(req: NextRequest) {
   const stream = await anthropic.messages.stream({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
-    system: CORPORATE_SYSTEM_PROMPT,
+    system: [
+      {
+        type: "text",
+        text: CORPORATE_SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" }, // cachea el system prompt 5 min → -90% en tokens de entrada
+      },
+    ],
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   });
 
