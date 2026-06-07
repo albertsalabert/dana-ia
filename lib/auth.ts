@@ -1,34 +1,20 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { getServiceClient } from "./supabase";
+import bcrypt from "bcryptjs";
 
 const SECRET = new TextEncoder().encode(
   process.env.AUTH_SECRET || "default-secret-change-in-production-32ch"
 );
 
-const MAGIC_LINK_EXPIRY = 60 * 15; // 15 minutos
 const SESSION_EXPIRY = 60 * 60 * 8; // 8 horas
 
-export async function createMagicToken(email: string): Promise<string> {
-  return new SignJWT({ email, type: "magic" })
-    .setProtectedHeader({ alg: "HS256" })
-    .setExpirationTime(`${MAGIC_LINK_EXPIRY}s`)
-    .setIssuedAt()
-    .sign(SECRET);
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, 12);
 }
 
-export async function verifyMagicToken(
-  token: string
-): Promise<{ email: string } | null> {
-  try {
-    const { payload } = await jwtVerify(token, SECRET);
-    if (payload.type !== "magic" || typeof payload.email !== "string") {
-      return null;
-    }
-    return { email: payload.email };
-  } catch {
-    return null;
-  }
+export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(password, hash);
 }
 
 export async function createSessionToken(userId: string, role: string): Promise<string> {
@@ -64,26 +50,14 @@ export async function getSession(): Promise<{
 
 export async function requireSession() {
   const session = await getSession();
-  if (!session) {
-    throw new Error("Unauthorized");
-  }
+  if (!session) throw new Error("Unauthorized");
   return session;
 }
 
 export async function requireAdmin() {
   const session = await requireSession();
-  if (session.role !== "admin") {
-    throw new Error("Forbidden");
-  }
+  if (session.role !== "admin") throw new Error("Forbidden");
   return session;
-}
-
-export async function updateLastSeen(userId: string) {
-  const db = getServiceClient();
-  await db
-    .from("users")
-    .update({ last_seen_at: new Date().toISOString() })
-    .eq("id", userId);
 }
 
 export async function logAudit(
