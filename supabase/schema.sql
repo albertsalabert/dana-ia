@@ -33,18 +33,13 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON public.audit_logs(action);
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 
--- Las operaciones las hace el service_role key (bypassa RLS)
--- Los usuarios anónimos no tienen acceso directo a estas tablas
+-- Eliminar políticas existentes antes de recrearlas
+DROP POLICY IF EXISTS "No public access" ON public.users;
+DROP POLICY IF EXISTS "No public access" ON public.audit_logs;
 
 -- Política: ningún acceso público directo
 CREATE POLICY "No public access" ON public.users FOR ALL TO anon USING (false);
 CREATE POLICY "No public access" ON public.audit_logs FOR ALL TO anon USING (false);
-
--- ============================================================
--- Limpieza automática de logs antiguos (> 12 meses, RGPD)
--- Ejecutar como cron job en Supabase o externamente
--- ============================================================
--- DELETE FROM public.audit_logs WHERE created_at < now() - INTERVAL '12 months';
 
 -- ============================================================
 -- INSERTAR PRIMER ADMINISTRADOR

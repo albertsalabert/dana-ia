@@ -10,7 +10,7 @@ export async function sendMagicLink(email: string, token: string) {
   const from = process.env.RESEND_FROM || `${company} <onboarding@resend.dev>`;
 
   const resend = getResend();
-  await resend.emails.send({
+  const { error } = await resend.emails.send({
     from,
     to: email,
     subject: `Tu enlace de acceso a ${company}`,
@@ -39,4 +39,9 @@ export async function sendMagicLink(email: string, token: string) {
       </html>
     `,
   });
+
+  if (error) {
+    console.error("Resend error:", JSON.stringify(error));
+    throw new Error(`Resend: ${error.message}`);
+  }
 }
