@@ -1,21 +1,17 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: Number(process.env.SMTP_PORT) === 465,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY || "placeholder");
+}
 
 export async function sendMagicLink(email: string, token: string) {
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/auth/verify?token=${token}`;
   const company = process.env.NEXT_PUBLIC_COMPANY_NAME || "IA Corporativa";
+  const from = process.env.RESEND_FROM || `${company} <onboarding@resend.dev>`;
 
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM || `${company} <noreply@empresa.com>`,
+  const resend = getResend();
+  await resend.emails.send({
+    from,
     to: email,
     subject: `Tu enlace de acceso a ${company}`,
     html: `
