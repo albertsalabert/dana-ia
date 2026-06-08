@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Bot, Send, Plus, LogOut, Settings, AlertTriangle,
-  User, Loader2, Trash2, MessageSquare,
+  User, Loader2, Trash2, MessageSquare, ExternalLink, FileText,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -296,6 +296,28 @@ export default function ChatInterface({ user, initialConversations }: Props) {
               )
             )
           )}
+        </div>
+
+        {/* Apps corporativas */}
+        <div className="px-3 pb-2 border-t border-blue-800 pt-3">
+          <p className="text-blue-400 text-xs font-semibold px-1 pb-2 uppercase tracking-wider">
+            Apps
+          </p>
+          {[
+            { label: "DANA PDF", href: "https://dana-pdf.vercel.app/", icon: FileText },
+          ].map(({ label, href, icon: Icon }) => (
+            <a
+              key={href}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-blue-800 transition-colors group"
+            >
+              <Icon className="w-4 h-4 text-blue-300 flex-shrink-0" />
+              <span className="text-sm text-blue-100 flex-1">{label}</span>
+              <ExternalLink className="w-3 h-3 text-blue-500 group-hover:text-blue-300 flex-shrink-0" />
+            </a>
+          ))}
         </div>
 
         {/* Footer usuario */}
