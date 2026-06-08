@@ -3,6 +3,7 @@ import { anthropic, CORPORATE_SYSTEM_PROMPT } from "@/lib/anthropic";
 import { filterContent, FILTER_MESSAGES } from "@/lib/content-filter";
 import { requireSession, logAudit } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
+import { getActiveKnowledge, buildKnowledgeBlock } from "@/lib/knowledge";
 
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -25,7 +26,6 @@ export async function POST(req: NextRequest) {
 
   let messages: ChatMessage[];
   let conversationId: string | null;
-
   try {
     const body = await req.json();
     messages = body.messages;
@@ -35,9 +35,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Petición inválida" }, { status: 400 });
   }
 
-  // Filtrar el último mensaje del usuario
+  // Filtrar último mensaje del usuario
   const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
-
   if (lastUserMessage) {
     const filterResult = filterContent(lastUserMessage.content);
     if (!filterResult.allowed) {
@@ -67,13 +66,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Guardar mensaje del usuario
-  if (conversationId && lastUserMessage && isFirstMessage) {
-    await db.from("messages").insert({
-      conversation_id: conversationId,
-      role: "user",
-      content: lastUserMessage.content,
-    });
-  } else if (conversationId && lastUserMessage) {
+  if (conversationId && lastUserMessage) {
     await db.from("messages").insert({
       conversation_id: conversationId,
       role: "user",
@@ -81,17 +74,20 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  await logAudit(session.userId, "message_sent", { message_count: messages.length });
+  // Cargar base de conocimiento corporativo
+  const knowledgeEntries = await getActiveKnowledge();
+  const knowledgeBlock = buildKnowledgeBlock(knowledgeEntries);
+  const fullSystemPrompt = CORPORATE_SYSTEM_PROMPT + knowledgeBlock;
 
-  // Streaming con acumulación para guardar respuesta
+  // Llamada a Claude con prompt caching
   const stream = await anthropic.messages.stream({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
     system: [
       {
         type: "text",
-        text: CORPORATE_SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" }, // cachea el system prompt 5 min → -90% en tokens de entrada
+        text: fullSystemPrompt,
+        cache_control: { type: "ephemeral" }, // cachea system prompt + knowledge base
       },
     ],
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -114,7 +110,16 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Guardar respuesta del asistente y actualizar timestamp conversación
+      // Obtener uso de tokens
+      const finalMsg = await stream.finalMessage();
+      const usage = finalMsg.usage as {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+      };
+
+      // Guardar respuesta + actualizar conversación
       if (conversationId && fullResponse) {
         await db.from("messages").insert({
           conversation_id: conversationId,
@@ -126,6 +131,15 @@ export async function POST(req: NextRequest) {
           .update({ updated_at: new Date().toISOString() })
           .eq("id", conversationId);
       }
+
+      // Auditoría con tokens
+      await logAudit(session.userId, "message_sent", {
+        message_count: messages.length,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_input_tokens ?? 0,
+        cache_write_tokens: usage.cache_creation_input_tokens ?? 0,
+      });
 
       controller.enqueue(
         encoder.encode(
