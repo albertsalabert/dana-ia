@@ -66,10 +66,17 @@ export async function logAudit(
   metadata: Record<string, unknown> = {}
 ) {
   const db = getServiceClient();
-  await db.from("audit_logs").insert({
+  const row: Record<string, unknown> = {
     user_id: userId,
     action,
     metadata,
     created_at: new Date().toISOString(),
-  });
+  };
+  // Guardar tokens como columnas propias si están presentes
+  if (typeof metadata.input_tokens === "number") row.input_tokens = metadata.input_tokens;
+  if (typeof metadata.output_tokens === "number") row.output_tokens = metadata.output_tokens;
+  if (typeof metadata.cache_read_tokens === "number") row.cache_read_tokens = metadata.cache_read_tokens;
+
+  const { error } = await db.from("audit_logs").insert(row);
+  if (error) console.error("logAudit error:", error.message);
 }

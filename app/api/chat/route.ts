@@ -97,54 +97,60 @@ export async function POST(req: NextRequest) {
     async start(controller) {
       const encoder = new TextEncoder();
       let fullResponse = "";
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheReadTokens = 0;
+      let cacheWriteTokens = 0;
 
-      for await (const chunk of stream) {
-        if (
-          chunk.type === "content_block_delta" &&
-          chunk.delta.type === "text_delta"
-        ) {
-          fullResponse += chunk.delta.text;
-          controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`)
-          );
+      try {
+        for await (const chunk of stream) {
+          if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+            fullResponse += chunk.delta.text;
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`)
+            );
+          }
+          // Capturar tokens del evento message_delta (llega al final del stream)
+          if (chunk.type === "message_delta" && chunk.usage) {
+            outputTokens = chunk.usage.output_tokens ?? 0;
+          }
+          // Capturar tokens de entrada del evento message_start
+          if (chunk.type === "message_start" && chunk.message?.usage) {
+            inputTokens = chunk.message.usage.input_tokens ?? 0;
+            const u = chunk.message.usage as unknown as Record<string, number>;
+            cacheReadTokens = u.cache_read_input_tokens ?? 0;
+            cacheWriteTokens = u.cache_creation_input_tokens ?? 0;
+          }
         }
-      }
 
-      // Obtener uso de tokens
-      const finalMsg = await stream.finalMessage();
-      const usage = finalMsg.usage as {
-        input_tokens: number;
-        output_tokens: number;
-        cache_creation_input_tokens?: number;
-        cache_read_input_tokens?: number;
-      };
+        // Guardar respuesta del asistente
+        if (conversationId && fullResponse) {
+          await db.from("messages").insert({
+            conversation_id: conversationId,
+            role: "assistant",
+            content: fullResponse,
+          });
+          await db
+            .from("conversations")
+            .update({ updated_at: new Date().toISOString() })
+            .eq("id", conversationId);
+        }
 
-      // Guardar respuesta + actualizar conversación
-      if (conversationId && fullResponse) {
-        await db.from("messages").insert({
-          conversation_id: conversationId,
-          role: "assistant",
-          content: fullResponse,
+        // Auditoría con tokens
+        await logAudit(session.userId, "message_sent", {
+          message_count: messages.length,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_read_tokens: cacheReadTokens,
+          cache_write_tokens: cacheWriteTokens,
         });
-        await db
-          .from("conversations")
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", conversationId);
-      }
 
-      // Auditoría con tokens
-      await logAudit(session.userId, "message_sent", {
-        message_count: messages.length,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_tokens: usage.cache_read_input_tokens ?? 0,
-        cache_write_tokens: usage.cache_creation_input_tokens ?? 0,
-      });
+      } catch (err) {
+        console.error("Stream processing error:", err);
+      }
 
       controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ done: true, conversationId })}\n\n`
-        )
+        encoder.encode(`data: ${JSON.stringify({ done: true, conversationId })}\n\n`)
       );
       controller.close();
     },
